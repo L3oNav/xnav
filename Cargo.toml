@@ -1,0 +1,18 @@
+[package]
+name = "xnav"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+http = "1.1.0"
+http-body-util = "0.1.2"
+hyper = { version = "0.14", features = ["full"] }
+serde = "1.0.203"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8.14"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+hyper = "0.14"
+

@@ -1,6 +1,6 @@
-use hyper::{Body, Request as HyperRequest, Response, Server as HyperServer};
+use hyper::{Body, Request as HyperRequest, Response, Server as HyperServer, Method};
 use hyper::service::{make_service_fn, service_fn};
-use std::{sync::Arc};
+use std::sync::Arc;
 use std::net::SocketAddr;
 
 mod handlers;
@@ -70,10 +70,14 @@ impl Server {
         let body_bytes = hyper::body::to_bytes(body).await?;
         let stream = &body_bytes[..];
 
+        // Log the raw buffer, the request method and URI
+        println!("Received request: {} {}", parts.method, parts.uri);
+        println!("Raw buffer: {:?}", stream);
+
         let request = match request::Request::parse(stream) {
             Ok(request) => request,
             Err(err) => {
-                eprintln!("Problem parsing request: {}", err);
+                println!("Problem parsing request: {}", err);
                 let response = Response::builder()
                     .status(400)
                     .body(Body::from("Bad Request"))
