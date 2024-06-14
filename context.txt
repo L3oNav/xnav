@@ -1,0 +1,666 @@
+
+File: ./tests/tests_server.rs
+```rust
+use hyper::{Body, Client, Method, Request, Uri};
+use std::sync::Arc;
+use std::net::TcpListener;
+use xnav::server::Server;
+use std::error::Error;
+
+async fn start_server(address: &str, args: Vec<String>) -> Arc<Server> {
+    let server = Server::setup(address, 4, &args);
+    let server_instance = Arc::new(server);
+
+    // Start the server in a background task
+    let server_clone: Arc<Server> = Arc::clone(&server_instance);
+    tokio::spawn(async move {
+        server_clone.run().await;
+    });
+
+    // Wait for the server to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    server_instance
+}
+
+#[tokio::test]
+async fn test_server_setup() -> Result<(), Box<dyn Error>> {
+    let address = "127.0.0.1:3312";
+    let args = vec!["server".into(), "--directory".into(), "test_dir".into()];
+    start_server(&address, args).await;
+
+    // Test the server with a simple GET request
+    let client = Client::new();
+    let uri: Uri = format!("http://{}/", address).parse()?;
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())?;
+
+    let res = client.request(req).await?;
+
+    assert_eq!(res.status(), 200);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_server_handle_echo() -> Result<(), Box<dyn Error>> {
+    let port = "3312";
+    let address = format!("127.0.0.1:{}", port);
+    let args = vec!["server".into(), "--directory".into(), "test_dir".into()];
+    start_server(&address, args).await;
+
+    // Test the /echo/ endpoint
+    let client = Client::new();
+    let uri: Uri = format!("http://{}/echo/", address).parse()?;
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::from("Echo Test"))?;
+
+    let res = client.request(req).await?;
+    let body_bytes = hyper::body::to_bytes(res.into_body()).await?;
+    let body_str = std::str::from_utf8(&body_bytes)?;
+
+    assert_eq!(body_str, "Echo Test");
+    Ok(())
+}
+```
+
+File: ./src/lib.rs
+```rust
+// src/lib.rs
+
+pub mod server;
+pub mod threading;
+
+// Re-export server module to make it easier to access in tests
+pub use server::Server;
+```
+
+File: ./src/server/handlers.rs
+```rust
+use std::fs;
+
+use super::{
+    Cfg,
+    request::Request,
+    http::HTTPStatus,
+};
+
+pub type Handler = fn (&Cfg, &Request) -> String;
+
+pub fn handle_404(_: &Cfg, _: &Request) -> String {
+    format!("{}\r\n\r\n", HTTPStatus::NotFound.as_str())
+}
+
+pub fn handle_200(_: &Cfg, _: &Request) -> String {
+    format!(
+        "{}\r\n\r\n",
+        HTTPStatus::Ok.as_str()
+    )
+}
+
+pub fn handle_echo(_: &Cfg, request: &Request) -> String {
+    let split: Vec<&str> = request.path.path
+        .split('/')
+        .filter(|item| !item.is_empty())
+        .collect();
+
+    let contents = split[1..].join("/");
+
+    format!(
+        "{}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        HTTPStatus::Ok.as_str(),
+        contents.len(),
+        contents
+    )
+}
+
+pub fn handle_user_agent(_: &Cfg, request: &Request) -> String {
+    let contents = request.headers
+        .get("User-Agent")
+        .map_or("Unknown", String::as_str);
+
+    format!(
+        "{}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        HTTPStatus::Ok.as_str(),
+        contents.len(),
+        contents
+    )
+}
+
+pub fn handle_get_file(cfg: &Cfg, request: &Request) -> String {
+    match &cfg.files_dir {
+        Some(file_dir) => {
+            let filename = request.path.path["/files/".len()..].trim();
+            // naive
+            let file_path = format!("{file_dir}/{filename}");
+            let contents = fs::read_to_string(file_path);
+
+            match contents {
+                Ok(contents) => {
+                    format!(
+                        "{}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+                        HTTPStatus::Ok.as_str(),
+                        contents.len(),
+                        contents
+                    )
+                },
+                Err(_) => format!("{}\r\n\r\n", HTTPStatus::NotFound.as_str()),
+            }            
+        },
+        None => format!("{}\r\n\r\n", HTTPStatus::NotFound.as_str()),
+    }
+}
+
+pub fn handle_post_file(cfg: &Cfg, request: &Request) -> String {
+    match &cfg.files_dir {
+        Some(file_dir) => {
+            let filename = request.path.path["/files/".len()..].trim();
+            let file_path = format!("{file_dir}/{filename}");
+
+            match fs::write(file_path, &request.body) {
+                Ok(_) => {
+                    format!(
+                        "{}\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n",
+                        HTTPStatus::Created.as_str(),
+                    )
+                },
+                Err(_) => {
+                    format!("{}\r\n\r\n", HTTPStatus::InternalServerError.as_str())
+                },
+            }
+        },
+        None => format!("{}\r\n\r\n", HTTPStatus::NotFound.as_str()),
+    }
+}
+```
+
+File: ./src/server/request.rs
+```rust
+use anyhow::{anyhow, Error};
+use std::collections::HashMap;
+use std::io::{prelude::*, BufReader};
+
+use super::http::HttpMethod;
+
+#[derive(Debug)]
+pub struct Path {
+    pub path: String,
+    pub query: String,
+}
+
+impl Path {
+    pub fn build(path: String) -> Path {
+        let mut split = path.split('?');
+        let path = split.next().unwrap_or_default().to_owned();
+        let query = split.next().unwrap_or_default().to_owned();
+        Path { path, query }
+    }
+}
+
+#[derive(Debug)]
+pub struct Request {
+    pub method: HttpMethod,
+    pub path: Path,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+impl Request {
+    pub fn parse(buf: &[u8]) -> Result<Request, Error> {
+        let mut buf_reader = BufReader::new(buf);
+
+        let (method, path) = Request::parse_status_line(&mut buf_reader)?;
+        let headers = Request::parse_headers(&mut buf_reader)?;
+
+        // Safely get Content-Length as a String
+        let content_length = headers.get("Content-Length").unwrap_or(&"0".to_string()).to_string();
+        let body = Request::parse_body(&mut buf_reader, &content_length)?;
+
+        Ok(Request { method, path, headers, body })
+    }
+
+    fn parse_status_line<R: BufRead>(buf_reader: &mut R) -> Result<(HttpMethod, Path), Error> {
+        let mut status_line = String::new();
+        buf_reader.read_line(&mut status_line)?;
+        
+        // Log the status line for debugging
+        println!("Status Line: '{}'", status_line.trim());
+
+        if status_line.trim().is_empty() {
+            return Err(anyhow!("Received empty status line"));
+        }
+
+        let mut parts = status_line.splitn(3, ' ');
+        let method = HttpMethod::parse(parts.next().unwrap_or_default());
+        let path = Path::build(parts.next().unwrap_or_default().to_owned());
+
+        Ok((method, path))
+    }
+
+    fn parse_headers<R: BufRead>(buf_reader: &mut R) -> Result<HashMap<String, String>, Error> {
+        let mut headers = HashMap::new();
+        let mut header_line = String::new();
+
+        loop {
+            buf_reader.read_line(&mut header_line)?;
+            
+            if header_line == "\r\n" {
+                break;
+            }
+            
+            // Log each header line for debugging
+            println!("Header Line: '{}'", header_line.trim());
+
+            if let Some((key, val)) = header_line.split_once(':') {
+                headers.insert(
+                    clean_header_value(key),
+                    clean_header_value(val),
+                );
+                header_line.clear();
+            } else {
+                // Provide more context in the error message
+                return Err(anyhow!("Invalid header line: '{}'", header_line.trim()));
+            }
+        }
+
+        Ok(headers)
+    }
+
+    fn parse_body<R: BufRead>(buf_reader: &mut R, content_len: &str) -> Result<String, Error> {
+        let len = content_len.parse::<u64>().map_err(|_| anyhow!("Invalid Content-Length value"))?;
+        
+        if len > 0 {
+            let mut buf = buf_reader.take(len);
+            let mut body = vec![];
+            buf.read_to_end(&mut body)?;
+            Ok(String::from_utf8_lossy(&body).to_string())
+        } else {
+            Ok(String::new())
+        }
+    }
+}
+
+fn clean_header_value(val: &str) -> String {
+    val.trim().to_owned()
+}
+```
+
+File: ./src/server/http.rs
+```rust
+#[derive(Eq, Hash, PartialEq, Debug)]
+pub enum HttpMethod {
+    GET,
+    POST,
+    PUT,
+
+    UNKNOWN,
+}
+
+impl HttpMethod {
+    pub fn parse(method: &str) -> HttpMethod {
+        match method {
+            "GET" => HttpMethod::GET,
+            "POST" => HttpMethod::POST,
+            "PUT" => HttpMethod::PUT,
+            _ => HttpMethod::UNKNOWN,
+        }
+    }
+}
+
+pub enum HTTPStatus {
+    Ok = 200,
+    Created = 201,
+    NotFound = 404,
+    InternalServerError = 500,
+    // BadRequest = 400,
+}
+
+impl HTTPStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HTTPStatus::Ok => "HTTP/1.1 200 OK",
+            HTTPStatus::Created => "HTTP/1.1 201 Created",
+            HTTPStatus::NotFound => "HTTP/1.1 404 Not Found",
+            HTTPStatus::InternalServerError => "HTTP/1.1 500 Internal Server Error",
+            // HTTPStatus::BadRequest => "HTTP/1.1 400 Internal Server Error",
+        }
+    }
+}
+```
+
+File: ./src/server/routing.rs
+```rust
+use super::handlers::*;
+use super::http::HttpMethod;
+use super::request::Request;
+
+pub struct Router {
+    routes: Vec<Route>,
+}
+
+impl Router {
+    pub fn new(routes: Vec<Route>) -> Router {
+        Router{ routes }
+    }
+
+    pub fn get_handler(&self, request: &Request) -> Handler {
+        let opt_route = self.routes
+            .iter()
+            .find(|&route| 
+                route.method == request.method 
+                && route.matches(&request.path.path)
+            );
+
+        match opt_route {
+            Some(route) => route.handler,
+            _ => handle_404
+        }
+    }
+}
+
+pub struct Route {
+    path: String,
+    method: HttpMethod,
+    handler: Handler,
+}
+
+impl Route {
+    pub fn new(path: &str, method: HttpMethod, handler: Handler) -> Route {
+        Route {
+            path: path.to_string(), 
+            method, 
+            handler
+        }
+    }
+
+    pub fn matches(&self, path: &String) -> bool {
+        // TODO use regexp to match
+
+        // root case
+        if self.path.len() == 1 {
+            return &self.path == path
+        }
+
+        path.starts_with(&self.path)
+    }
+}
+```
+
+File: ./src/server.rs
+```rust
+use hyper::{Body, Request as HyperRequest, Response, Server as HyperServer, Method};
+use hyper::service::{make_service_fn, service_fn};
+use std::sync::Arc;
+use std::net::SocketAddr;
+
+mod handlers;
+mod http;
+mod request;
+mod routing;
+
+use http::HttpMethod;
+use request::Request;
+use routing::{Route, Router};
+
+use crate::threading::LoadBalancer;
+
+const DIR_FLAG: &str = "--directory";
+
+pub struct AppState {
+    router: Arc<Router>,
+    cfg: Arc<Cfg>,
+    pool: LoadBalancer,
+}
+
+struct Cfg {
+    files_dir: Option<String>,
+}
+
+pub struct Server {
+    addr: SocketAddr,
+    state: Arc<AppState>,
+}
+
+impl Server {
+    pub fn setup(addr: &str, pool_size: usize, args: &[String]) -> Server {
+        let addr = addr.parse().expect("Unable to parse socket address");
+        let router = Arc::new(setup_router());
+        let cfg = Arc::new(setup_cfg(&args));
+        let pool = LoadBalancer::new(pool_size);
+
+        let state = Arc::new(AppState { router, cfg, pool });
+
+        Server { addr, state }
+    }
+
+    pub async fn run(&self) {
+        let make_svc = make_service_fn(move |_conn| {
+            let state = Arc::clone(&self.state);
+            async {
+                Ok::<_, hyper::Error>(service_fn(move |req| {
+                    Server::handle_connection(Arc::clone(&state), req)
+                }))
+            }
+        });
+
+        let server = HyperServer::bind(&self.addr).serve(make_svc);
+
+        println!("Listening on http://{}", self.addr);
+
+        if let Err(e) = server.await {
+            eprintln!("Server error: {}", e);
+        }
+    }
+
+    async fn handle_connection(
+        state: Arc<AppState>,
+        req: HyperRequest<Body>,
+    ) -> Result<Response<Body>, hyper::Error> {
+        println!("Received request: {} {}", req.method(), req.uri());
+
+        let (parts, body) = req.into_parts();
+        let body_bytes = hyper::body::to_bytes(body).await?;
+        let stream = &body_bytes[..];
+
+        // Log the raw buffer
+        println!("Raw buffer: {:?}", stream);
+
+        let request = match Request::parse(&format!("{} {}", parts.method, parts.uri).into_bytes()) {
+            Ok(request) => request,
+            Err(err) => {
+                println!("Problem parsing request: {}", err);
+                let response = Response::builder()
+                    .status(400)
+                    .body(Body::from("Bad Request"))
+                    .unwrap();
+                return Ok(response);
+            },
+        };
+
+        let handler = state.router.get_handler(&request);
+        let cfg = Arc::clone(&state.cfg);
+
+        let response = handler(&cfg, &request);
+        Ok(Response::new(Body::from(response)))
+    }
+}
+
+fn setup_cfg(args: &[String]) -> Cfg {
+    let files_dir = setup_directory(&args);
+    Cfg { files_dir }
+}
+
+fn setup_router() -> Router {
+    Router::new(vec![
+        Route::new("/", HttpMethod::GET, handlers::handle_200),
+        Route::new("/echo/", HttpMethod::GET, handlers::handle_echo),
+        Route::new("/user-agent", HttpMethod::GET, handlers::handle_user_agent),
+        Route::new("/files/", HttpMethod::GET, handlers::handle_get_file),
+        Route::new("/files/", HttpMethod::POST, handlers::handle_post_file),
+    ])
+}
+
+fn setup_directory(args: &[String]) -> Option<String> {
+    let dir_flag_index = args.iter().position(|arg| arg == DIR_FLAG);
+
+    match dir_flag_index {
+        Some(dir_flag_index) => {
+            let path = args.get(dir_flag_index + 1);
+            match path {
+                Some(path) => {
+                    let path = path.clone();
+                    std::fs::create_dir_all(&path)
+                        .expect(&format!("Can't create directory at {}", &path));
+                    return Some(path);
+                },
+                None => {
+                    panic!("No `directory` argument provided for --directory")
+                }
+            };
+        },
+        None => None,
+    }
+}
+```
+
+File: ./src/main.rs
+```rust
+use std::env;
+
+mod server;
+mod threading;
+
+use server::Server;
+
+#[tokio::main]
+async fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    let server = Server::setup(
+        "127.0.0.1:3312",
+        4,
+        &args,
+    );
+
+    server.run().await;
+}
+```
+
+File: ./src/threading.rs
+```rust
+use std::{
+    sync::{mpsc, Arc, Mutex}, 
+    thread,
+    collections::HashMap
+};
+
+// Alias for a job, which is a boxed function that satisfies certain trait bounds
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+// Struct representing the load balancer
+pub struct LoadBalancer {
+    workers: Vec<Worker>,  // Vector of worker threads
+    sender: mpsc::Sender<BalancerMessage>,  // Channel sender to dispatch jobs
+    load: Arc<Mutex<HashMap<usize, usize>>>,  // Map to track the number of active jobs per worker
+}
+
+// Enum for messages that can be sent to the load balancer
+enum BalancerMessage {
+    NewJob(Job),  // Message type for new job
+    JobFinished(usize),  // Message type for finished job with worker ID
+}
+
+// Implementation of the LoadBalancer
+impl LoadBalancer {
+    // Constructor method to create a new LoadBalancer
+    pub fn new(size: usize) -> LoadBalancer {
+        assert!(size > 0);  // Ensure the size is greater than 0
+
+        let (sender, receiver) = mpsc::channel();  // Create a channel for communication
+        let receiver = Arc::new(Mutex::new(receiver));  // Wrap receiver in Arc and Mutex for thread-safe shared ownership
+        let load = Arc::new(Mutex::new(HashMap::new()));  // Initialize the load map
+
+        let mut workers = Vec::with_capacity(size);  // Create a vector to hold workers
+
+        // Spawn worker threads
+        for id in 0..size {
+            workers.push(Worker::new(id, Arc::clone(&receiver), Arc::clone(&load), sender.clone()));
+            load.lock().unwrap().insert(id, 0);  // Initialize each worker's load to 0
+        }
+
+        LoadBalancer { workers, sender, load }
+    }
+
+    // Method to add a new job to the load balancer
+    pub fn execute<F>(&self, f: F)
+    where 
+        F: FnOnce() + Send + 'static,
+    {
+        let job = Box::new(f);  // Wrap the job in a Box
+        self.sender.send(BalancerMessage::NewJob(job)).unwrap();  // Send a NewJob message
+    }
+
+    // Private method to update the load when a job is finished by a worker
+    fn worker_did_finish_job(&self, worker_id: usize) {
+        let mut load = self.load.lock().unwrap();
+        if let Some(count) = load.get_mut(&worker_id) {
+            *count -= 1;  // Decrement the job count for the worker
+        }
+    }
+}
+
+// Implementation of the Drop trait for LoadBalancer
+impl Drop for LoadBalancer {
+    fn drop(&mut self) {
+        // Ensure all worker threads are properly joined when the LoadBalancer is dropped
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+}
+
+// Struct representing a worker thread
+struct Worker {
+    id: usize,  // ID of the worker
+    thread: Option<thread::JoinHandle<()>>,  // Handle to the thread
+}
+
+// Implementation of the Worker
+impl Worker {
+    // Constructor method to create a new Worker
+    fn new(
+        id: usize,
+        receiver: Arc<Mutex<mpsc::Receiver<BalancerMessage>>>,
+        load: Arc<Mutex<HashMap<usize, usize>>>,
+        balancer_sender: mpsc::Sender<BalancerMessage>
+    ) -> Worker {
+        let thread = thread::spawn(move || loop {
+            let message = receiver.lock().unwrap().recv().unwrap();  // Wait for a message from the load balancer
+
+            match message {
+                BalancerMessage::NewJob(job) => {
+                    {
+                        let mut load = load.lock().unwrap();
+                        if let Some(count) = load.get_mut(&id) {
+                            *count += 1;  // Increment the job count for this worker
+                        }
+                    }
+                    println!("Worker {id} got a job; executing.");
+                    job();  // Execute the job
+                    // Notify the load balancer that the job is finished
+                    balancer_sender.send(BalancerMessage::JobFinished(id)).unwrap();
+                },
+                BalancerMessage::JobFinished(_) => { /* Ignore this message in the worker */ }
+            }
+        });
+        Worker { id, thread: Some(thread) }
+    }
+}
+```
+

@@ -1,15 +1,13 @@
-use hyper::{Body, Request as HyperRequest, Response, Server as HyperServer, Method};
+use hyper::{Body, Request, Response, Server as HyperServer, Method};
 use hyper::service::{make_service_fn, service_fn};
 use std::sync::Arc;
 use std::net::SocketAddr;
+use futures::future::BoxFuture;
 
 mod handlers;
 mod http;
-mod request;
 mod routing;
 
-use http::HttpMethod;
-use request::Request;
 use routing::{Route, Router};
 
 use crate::threading::LoadBalancer;
@@ -64,32 +62,14 @@ impl Server {
 
     async fn handle_connection(
         state: Arc<AppState>,
-        req: HyperRequest<Body>,
+        req: Request<Body>,
     ) -> Result<Response<Body>, hyper::Error> {
-        let (parts, body) = req.into_parts();
-        let body_bytes = hyper::body::to_bytes(body).await?;
-        let stream = &body_bytes[..];
+        println!("Received request: {} {}", req.method(), req.uri());
 
-        // Log the raw buffer, the request method and URI
-        println!("Received request: {} {}", parts.method, parts.uri);
-        println!("Raw buffer: {:?}", stream);
-
-        let request = match request::Request::parse(stream) {
-            Ok(request) => request,
-            Err(err) => {
-                println!("Problem parsing request: {}", err);
-                let response = Response::builder()
-                    .status(400)
-                    .body(Body::from("Bad Request"))
-                    .unwrap();
-                return Ok(response);
-            },
-        };
-
-        let handler = state.router.get_handler(&request);
+        let handler = state.router.get_handler(&req);
         let cfg = Arc::clone(&state.cfg);
 
-        let response = handler(&cfg, &request);
+        let response = handler(&cfg, req).await;
         Ok(Response::new(Body::from(response)))
     }
 }
@@ -101,11 +81,11 @@ fn setup_cfg(args: &[String]) -> Cfg {
 
 fn setup_router() -> Router {
     Router::new(vec![
-        Route::new("/", HttpMethod::GET, handlers::handle_200),
-        Route::new("/echo/", HttpMethod::GET, handlers::handle_echo),
-        Route::new("/user-agent", HttpMethod::GET, handlers::handle_user_agent),
-        Route::new("/files/", HttpMethod::GET, handlers::handle_get_file),
-        Route::new("/files/", HttpMethod::POST, handlers::handle_post_file),
+        Route::new("/", Method::GET, handlers::handle_200),
+        Route::new("/echo/", Method::GET, handlers::handle_echo),
+        Route::new("/user-agent", Method::GET, handlers::handle_user_agent),
+        Route::new("/files/", Method::GET, handlers::handle_get_file),
+        Route::new("/files/", Method::POST, handlers::handle_post_file),
     ])
 }
 
@@ -118,12 +98,15 @@ fn setup_directory(args: &[String]) -> Option<String> {
             match path {
                 Some(path) => {
                     let path = path.clone();
-                    std::fs::create_dir_all(&path)
-                        .expect(&format!("Can't create directory at {}", &path));
+                    if let Err(e) = std::fs::create_dir_all(&path) {
+                        eprintln!("Can't create directory at {}: {}", &path, e);
+                        std::process::exit(1);
+                    }
                     return Some(path);
                 },
                 None => {
-                    panic!("No `directory` argument provided for --directory")
+                    eprintln!("No `directory` argument provided for --directory");
+                    std::process::exit(1);
                 }
             };
         },
