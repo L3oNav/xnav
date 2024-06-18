@@ -1,19 +1,8 @@
-use std::env;
-
-mod server;
-mod threading;
-
-use server::Server;
-
 #[tokio::main]
-async fn main() {
-    let args: Vec<String> = env::args().collect();
-
-    let server = Server::setup(
-        "127.0.0.1:3312",
-        4,
-        &args,
-    );
-
-    server.run().await;
+async fn main() -> Result<(), xnav::Error> {
+    let config = toml::from_str(&tokio::fs::read_to_string("config.toml").await?)?;
+    xnav::Master::init(config)?
+        .shutdown_on(tokio::signal::ctrl_c())
+        .run()
+        .await
 }
