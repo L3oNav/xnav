@@ -1,101 +1,51 @@
+//! This module contains the configuration structures used for deserializing
+//! TOML configuration files, along with custom deserialization logic.
+
+use crate::threading::{self, Scheduler};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::net::SocketAddr;
-use std::{fmt::Debug};
 
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-
-use crate::sched::{self, Scheduler};
-use std::future::Future;
-use std::pin::Pin;
-use http::{HeaderMap, Extensions, header, request::Parts};
-use hyper::{body::{self, Incoming, Body}, Request, Response};
-
-/// This struct represents the entire configuration file,
-/// which describes a list of servers and their particular configuration options.
+/// Main configuration structs based on TOML config file.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
+    /// List of all servers.
     #[serde(rename = "server")]
     pub servers: Vec<Server>,
 }
 
-/// Description of a single server instance in the config file.
 #[derive(Serialize, Debug, Clone)]
 pub struct Server {
     pub listen: Vec<SocketAddr>,
+    #[serde(rename = "match")]
     pub patterns: Vec<Pattern>,
     #[serde(default = "default::max_connections")]
     pub max_connections: usize,
     pub name: Option<String>,
+    #[serde(skip)]
     pub log_name: String,
 }
 
-/// A pattern describes how to process requests with certain URIs,
-/// and optionally includes request and response header configurations.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Pattern {
     #[serde(default = "default::uri")]
     pub uri: String,
     #[serde(flatten)]
     pub action: Action,
-    pub request: Option<RequestHeaderConfig>,
-    pub response: Option<ResponseHeaderConfig>,
 }
 
-/// Request header configurations for manipulating headers before forwarding.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RequestHeaderConfig {
-    pub headers: RequestHeaders,
+#[serde(from = "BackendOption")]
+pub struct Backend {
+    pub address: SocketAddr,
+    pub weight: usize,
 }
 
-/// Response header configurations for manipulating headers before sending back.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ResponseHeaderConfig {
-    pub headers: ResponseHeaders,
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum Algorithm {
+    #[serde(rename = "WRR")]
+    Wrr,
 }
 
-/// Request headers defined in the configuration.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RequestHeaders {
-    pub forwarded: Option<ForwardedHeaderConfig>,
-}
-
-/// Response headers defined in the configuration.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ResponseHeaders {
-    pub via: Option<CommonHeaderConfig>,
-    pub server: Option<ServerHeaderConfig>,
-}
-
-/// Configuration for the `Forwarded` request header.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ForwardedHeaderConfig {
-    pub extend: Option<bool>,
-    pub by: Option<String>,
-}
-
-/// Common header configuration used for multiple headers.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CommonHeaderConfig {
-    pub extend: bool,
-}
-
-/// Configuration for the `Server` response header.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ServerHeaderConfig {
-    pub override: bool,
-    pub version: bool,
-}
-
-/// Describes what should be done when a request matches a pattern.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum Action {
-    Forward(Forward),
-    Serve(String),
-}
-
-/// Proxy-specific forwarding configuration.
 #[derive(Serialize, Deserialize)]
 #[serde(from = "ForwardOption")]
 pub struct Forward {
@@ -105,7 +55,7 @@ pub struct Forward {
     pub scheduler: Box<dyn Scheduler + Sync + Send>,
 }
 
-impl Debug for Forward {
+impl std::fmt::Debug for Forward {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Forward")
             .field("backends", &self.backends)
@@ -118,28 +68,22 @@ impl Clone for Forward {
     fn clone(&self) -> Self {
         Self {
             backends: self.backends.clone(),
-            algorithm: self.algorithm,
+            algorithm: self.algorithm.clone(),
             scheduler: sched::make(self.algorithm, &self.backends),
         }
     }
 }
 
-/// One element in the "forward" list, representing an upstream server.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(from = "BackendOption")]
-pub struct Backend {
-    pub address: SocketAddr,
-    pub weight: usize,
-}
-
-/// Algorithm that should be used for load balancing.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-pub enum Algorithm {
-    #[serde(rename = "WRR")]
-    Wrr,
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Forward(Forward),
+    Serve(String),
 }
 
 mod default {
+    //! Default values for some configuration options.
+
     pub fn uri() -> String {
         String::from("/")
     }
@@ -149,27 +93,30 @@ mod default {
     }
 }
 
-/// Helper for deserializing any type `T` into [`Vec<T>`].
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+impl<T> From<OneOrMany<T>> for Vec<T> {
+    fn from(value: OneOrMany<T>) -> Self {
+        match value {
+            OneOrMany::One(item) => vec![item],
+            OneOrMany::Many(items) => items,
+        }
+    }
+}
+
 fn one_or_many<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany<T> {
-        One(T),
-        Many(Vec<T>),
-    }
-
-    let helper = OneOrMany::deserialize(deserializer)?;
-    Ok(match helper {
-        OneOrMany::One(t) => vec![t],
-        OneOrMany::Many(vec) => vec,
-    })
+    Ok(OneOrMany::deserialize(deserializer)?.into())
 }
 
-/// Allows specifying the upstream servers in multiple formats.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 enum BackendOption {
@@ -183,12 +130,10 @@ impl From<BackendOption> for Backend {
             BackendOption::Simple(address) => (address, 1),
             BackendOption::Weighted { address, weight } => (address, weight),
         };
-
         Self { address, weight }
     }
 }
 
-/// Forward can be written as a single socket, list of sockets, list of objects with weights, or an object with load balancing algorithm.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 enum ForwardOption {
@@ -204,15 +149,12 @@ impl From<ForwardOption> for Forward {
     fn from(value: ForwardOption) -> Self {
         let (backends, algorithm) = match value {
             ForwardOption::Simple(backends) => (backends, Algorithm::Wrr),
-
             ForwardOption::WithAlgorithm {
                 algorithm,
                 backends,
             } => (backends, algorithm),
         };
-
         let scheduler = sched::make(algorithm, &backends);
-
         Self {
             backends,
             algorithm,
@@ -232,7 +174,6 @@ impl<'de> Deserialize<'de> for Server {
 
 struct ServerVisitor;
 
-/// Possible fields of a server instance in the config file.
 #[derive(Deserialize)]
 #[serde(field_identifier, rename_all = "lowercase")]
 enum Field {
@@ -243,12 +184,8 @@ enum Field {
     Uri,
     Name,
     Connections,
-    Request,
-    Response,
 }
 
-/// Custom errors that can happen during deserialization.
-#[derive(Debug)]
 enum Error {
     MixedSimpleAndMatch,
     MixedActions,
@@ -266,12 +203,11 @@ impl std::fmt::Display for Error {
             }
             Error::MissingConfig => "missing 'match' or simple configuration",
         };
-
         f.write_str(message)
     }
 }
 
-impl<'de> Visitor<'de> for ServerVisitor {
+impl<'de> serde::de::Visitor<'de> for ServerVisitor {
     type Value = Server;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -280,10 +216,10 @@ impl<'de> Visitor<'de> for ServerVisitor {
 
     fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
     where
-        M: de::MapAccess<'de>,
+        M: serde::de::MapAccess<'de>,
     {
-        let mut listen: Vec<SocketAddr> = vec![];
-        let mut patterns: Vec<Pattern> = vec![];
+        let mut listen = vec![];
+        let mut patterns = vec![];
         let mut simple_pattern: Option<Pattern> = None;
         let mut name = None;
         let mut max_connections = default::max_connections();
@@ -293,111 +229,86 @@ impl<'de> Visitor<'de> for ServerVisitor {
             match key {
                 Field::Listen => {
                     if !listen.is_empty() {
-                        return Err(de::Error::duplicate_field("listen"));
+                        return Err(serde::de::Error::duplicate_field("listen"));
                     }
-
                     listen = map.next_value::<OneOrMany<SocketAddr>>()?.into();
                 }
-
                 Field::Match => {
                     if !patterns.is_empty() {
-                        return Err(de::Error::duplicate_field("match"));
+                        return Err(serde::de::Error::duplicate_field("match"));
                     }
-
                     if simple_pattern.is_some() {
-                        return Err(de::Error::custom(Error::MixedSimpleAndMatch));
+                        return Err(serde::de::Error::custom(Error::MixedSimpleAndMatch));
                     }
-
                     patterns = map.next_value()?;
                 }
-
                 Field::Forward => {
                     if !patterns.is_empty() {
-                        return Err(de::Error::custom(Error::MixedSimpleAndMatch));
+                        return Err(serde::de::Error::custom(Error::MixedSimpleAndMatch));
                     }
-
-                    if let Some(pattern) = simple_pattern {
-                        return match pattern.action {
-                            Action::Forward(_) => Err(de::Error::duplicate_field("forward")),
-                            Action::Serve(_) => Err(de::Error::custom(Error::MixedActions)),
-                        };
+                    if let Some(pattern) = simple_pattern.take() {
+                        match pattern.action {
+                            Action::Forward(_) => {
+                                return Err(serde::de::Error::duplicate_field("forward"))
+                            }
+                            Action::Serve(_) => {
+                                return Err(serde::de::Error::custom(Error::MixedActions))
+                            }
+                        }
                     }
-
                     simple_pattern = Some(Pattern {
                         uri: default::uri(),
                         action: Action::Forward(map.next_value()?),
-                        request: None,
-                        response: None,
                     });
                 }
-
                 Field::Serve => {
                     if !patterns.is_empty() {
-                        return Err(de::Error::custom(Error::MixedSimpleAndMatch));
+                        return Err(serde::de::Error::custom(Error::MixedSimpleAndMatch));
                     }
-
-                    if let Some(pattern) = simple_pattern {
-                        return match pattern.action {
-                            Action::Forward(_) => Err(de::Error::custom(Error::MixedActions)),
-                            Action::Serve(_) => Err(de::Error::duplicate_field("serve")),
-                        };
+                    if let Some(pattern) = simple_pattern.take() {
+                        match pattern.action {
+                            Action::Forward(_) => {
+                                return Err(serde::de::Error::custom(Error::MixedActions))
+                            }
+                            Action::Serve(_) => {
+                                return Err(serde::de::Error::duplicate_field("serve"))
+                            }
+                        }
                     }
-
                     simple_pattern = Some(Pattern {
                         uri: default::uri(),
                         action: Action::Serve(map.next_value()?),
-                        request: None,
-                        response: None,
                     });
                 }
-
                 Field::Uri => {
                     if !patterns.is_empty() {
-                        return Err(de::Error::custom(Error::MixedSimpleAndMatch));
+                        return Err(serde::de::Error::custom(Error::MixedSimpleAndMatch));
                     }
-
                     uri = map.next_value()?;
                 }
-
                 Field::Name => {
                     if name.is_some() {
-                        return Err(de::Error::duplicate_field("name"));
+                        return Err(serde::de::Error::duplicate_field("name"));
                     }
-
                     name = Some(map.next_value()?);
                 }
-
-                Field::Connections => max_connections = map.next_value()?,
-
-                Field::Request => {
-                    if let Some(pattern) = simple_pattern.as_mut() {
-                        pattern.request = Some(map.next_value()?);
-                    } else {
-                        return Err(de::Error::missing_field("action"));
-                    }
-                }
-
-                Field::Response => {
-                    if let Some(pattern) = simple_pattern.as_mut() {
-                        pattern.response = Some(map.next_value()?);
-                    } else {
-                        return Err(de::Error::missing_field("action"));
-                    }
+                Field::Connections => {
+                    max_connections = map.next_value()?;
                 }
             }
         }
 
-        if let Some(mut pattern) = simple_pattern {
+        if let Some(mut pattern) = simple_pattern.take() {
             pattern.uri = uri;
             patterns.push(pattern);
         }
 
         if patterns.is_empty() {
-            return Err(de::Error::custom(Error::MissingConfig));
+            return Err(serde::de::Error::custom(Error::MissingConfig));
         }
 
         if listen.is_empty() {
-            return Err(de::Error::missing_field("listen"));
+            return Err(serde::de::Error::missing_field("listen"));
         }
 
         Ok(Server {
@@ -409,4 +320,3 @@ impl<'de> Visitor<'de> for ServerVisitor {
         })
     }
 }
-

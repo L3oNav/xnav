@@ -1,0 +1,18 @@
+[[server]]
+
+listen = ["127.0.0.1:3312", "192.168.1.68:3312"]
+max_connections = 1024
+name = "xnav_server"
+
+[[server.match]]
+
+uri = "/api"
+
+forward = [
+    { address = "127.0.01:7071", weight = 1 },
+]
+
+request.headers.forwarded = { extend = true }
+
+response.headers.via = { extend = true }
+response.headers.server = { override = true, version = false }

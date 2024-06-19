@@ -5,15 +5,13 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
-futures = "0.3.30"
 http = "1.1.0"
 http-body-util = "0.1.2"
 hyper = { version = "0.14", features = ["full"] }
-serde = "1.0.203"
-tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 toml = "0.8.14"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-hyper = "0.14"
-
+serde_json = "1.0"
