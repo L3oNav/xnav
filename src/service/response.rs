@@ -22,7 +22,7 @@ impl<T> ProxyResponse<T> {
     pub fn into_forwarded(mut self) -> Response<T> {
         self.response.headers_mut().insert(
             header::SERVER,
-            HeaderValue::from_str(crate::rxh_server_header().as_str()).unwrap(),
+            HeaderValue::from_str(xnav_server_header().as_str()).unwrap(),
         );
         self.response
     }
@@ -33,14 +33,14 @@ pub struct LocalResponse;
 
 impl LocalResponse {
     pub fn builder() -> http::response::Builder {
-        Response::builder().header(header::SERVER, crate::rxh_server_header())
+        Response::builder().header(header::SERVER, xnav_server_header())
     }
 
     pub fn not_found() -> BoxBodyResponse {
         Self::builder()
             .status(http::StatusCode::NOT_FOUND)
             .header(header::CONTENT_TYPE, "text/plain")
-            .body(crate::full("HTTP 404 NOT FOUND"))
+            .body(crate::service::body::full("HTTP 404 NOT FOUND"))
             .unwrap()
     }
 
@@ -48,11 +48,11 @@ impl LocalResponse {
         Self::builder()
             .status(http::StatusCode::BAD_GATEWAY)
             .header(header::CONTENT_TYPE, "text/plain")
-            .body(crate::full("HTTP 502 BAD GATEWAY"))
+            .body(crate::service::body::full("HTTP 502 BAD GATEWAY"))
             .unwrap()
     }
 }
 
-pub fn rxh_server_header() -> String {
-    format!("rxh/{}", crate::VERSION)
+pub fn xnav_server_header() -> String {
+    format!("xnav/{}", crate::VERSION)
 }

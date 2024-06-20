@@ -1,8 +1,6 @@
-//! Proxy requests require additional information attached to them.
-
+use http::{Extensions, HeaderMap, Uri};
+use hyper::{header, upgrade::OnUpgrade, Request};
 use std::net::SocketAddr;
-use http::{Extensions, HeaderMap};
-use hyper::{header, Request, upgrade::OnUpgrade};
 
 /// Request received by this proxy from a client.
 pub struct ProxyRequest<T> {
@@ -13,7 +11,12 @@ pub struct ProxyRequest<T> {
 }
 
 impl<T> ProxyRequest<T> {
-    pub fn new(request: Request<T>, client_addr: SocketAddr, server_addr: SocketAddr, proxy_id: Option<String>) -> Self {
+    pub fn new(
+        request: Request<T>,
+        client_addr: SocketAddr,
+        server_addr: SocketAddr,
+        proxy_id: Option<String>,
+    ) -> Self {
         Self {
             request,
             client_addr,
@@ -57,11 +60,16 @@ impl<T> ProxyRequest<T> {
 
         self.request
     }
+
+    pub fn uri(&self) -> &Uri {
+        self.request.uri()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hyper::Body;
 
     fn forwarded_header<T>(request: &Request<T>) -> String {
         let forwarded = request
@@ -80,7 +88,7 @@ mod tests {
         let proxy = "127.0.0.1:9000".parse().unwrap();
 
         let request = ProxyRequest::new(
-            Request::builder().body(crate::full("")).unwrap(),
+            Request::builder().body(Body::empty()).unwrap(),
             client,
             proxy,
             None,
@@ -100,7 +108,7 @@ mod tests {
         let proxy_id = String::from("rxh/main");
 
         let request = ProxyRequest::new(
-            Request::builder().body(crate::full("")).unwrap(),
+            Request::builder().body(Body::empty()).unwrap(),
             client,
             proxy,
             Some(proxy_id.clone()),

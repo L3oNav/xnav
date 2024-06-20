@@ -1,14 +1,21 @@
 // src/lib.rs
+// Uncomment if you plan to use these features
 // #![feature(ptr_from_ref)]
 // #![feature(is_some_and)]
 
 pub mod config;
-mod server;
-mod service;
-mod sync;
+pub mod server;
+pub mod service;
+pub mod sync;
 pub mod threading;
 
 use std::io;
+
+pub use config::{Action, Algorithm, Backend, Config, Forward, Pattern, Server};
+pub use server::{Master, Server as ServerInstance, ShutdownState, State};
+pub use service::{BoxBodyResponse, LocalResponse, ProxyResponse};
+pub use sync::{Notification, Notifier, Subscription};
+pub use threading::{make as make_scheduler, Scheduler, WeightedRoundRobin};
 
 /// RXH version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

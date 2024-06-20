@@ -3,7 +3,7 @@
 
 use crate::threading::{self, Scheduler};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, os::unix::thread};
 
 /// Main configuration structs based on TOML config file.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -69,7 +69,7 @@ impl Clone for Forward {
         Self {
             backends: self.backends.clone(),
             algorithm: self.algorithm.clone(),
-            scheduler: sched::make(self.algorithm, &self.backends),
+            scheduler: threading::make(self.algorithm, &self.backends),
         }
     }
 }
@@ -154,7 +154,7 @@ impl From<ForwardOption> for Forward {
                 backends,
             } => (backends, algorithm),
         };
-        let scheduler = sched::make(algorithm, &backends);
+        let scheduler = threading::make(algorithm, &backends);
         Self {
             backends,
             algorithm,

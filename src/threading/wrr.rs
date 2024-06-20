@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use super::Scheduler;
-use crate::{config::Backend, sync::ring::Ring};
+use crate::{config::Backend, sync::Ring};
 
 /// Classical Weighted Round Robin (WRR) algorithm.
 #[derive(Debug)]

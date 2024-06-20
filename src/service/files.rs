@@ -1,6 +1,6 @@
 //! Static files server sub-service.
 
-use crate::response::{BoxBodyResponse, LocalResponse};
+use crate::service::{BoxBodyResponse, LocalResponse};
 use hyper::header;
 use std::path::Path;
 
@@ -30,7 +30,7 @@ pub async fn transfer(path: &str, root: &str) -> Result<BoxBodyResponse, hyper::
     match tokio::fs::read(file).await {
         Ok(content) => Ok(LocalResponse::builder()
             .header(header::CONTENT_TYPE, content_type)
-            .body(crate::full(content))
+            .body(crate::service::body::full(content))
             .unwrap()),
         Err(_) => Ok(LocalResponse::not_found()),
     }

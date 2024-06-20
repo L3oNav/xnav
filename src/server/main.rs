@@ -4,7 +4,10 @@ use std::pin::Pin;
 
 use tokio::sync::{broadcast, watch};
 
-use crate::{config::Config, Server, State};
+use crate::{
+    config::Config,
+    server::{Server, State},
+};
 
 /// The master task is responsible for creating, spawning, and shutting down all the server instances described in the configuration file.
 pub struct Master {

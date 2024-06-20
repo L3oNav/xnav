@@ -1,7 +1,7 @@
 //! Custom synchronization primitives for RXH.
 
-mod notify;
 mod ring;
+mod sync;
 
-pub use notify::{Notification, Notifier, Subscription};
 pub use ring::Ring;
+pub use sync::{Notification, Notifier, Subscription};
