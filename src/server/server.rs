@@ -1,20 +1,18 @@
-use hyper::client::conn::http1::Builder;
-use std::future::Future;
-use std::io;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::ptr;
-use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpSocket};
-use tokio::sync::{watch, Semaphore};
+use std::{future::Future, io, net::SocketAddr, pin::Pin, ptr, sync::Arc};
+
+use hyper::server::conn::http1::Builder;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{watch, Semaphore},
+    TcpSocket,
+};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::{
     config,
-    rxh::Rxh,
-    sync::notify::{Notification, Notifier},
+    service::Xnav,
+    sync::{Notification, Notifier},
 };
-
 pub struct Server {
     state: watch::Sender<State>,
     listener: TcpListener,
@@ -192,10 +190,10 @@ impl<'a> Listener<'a> {
             let server_addr = stream.local_addr()?;
 
             tokio::task::spawn(async move {
-                if let Err(err) = hyper::server::conn::http1::Builder::new()
+                if let Err(err) = Builder::new()
                     .preserve_header_case(true)
                     .title_case_headers(true)
-                    .serve_connection(stream, Rxh::new(config, client_addr, server_addr))
+                    .serve_connection(stream, Xnav::new(config, client_addr, server_addr))
                     .with_upgrades()
                     .await
                 {

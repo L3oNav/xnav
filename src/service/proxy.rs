@@ -1,22 +1,32 @@
+use std::net::SocketAddr;
+
 use http_body_util::BodyExt;
-use hyper::body::{Body, Incoming};
-use hyper::client::conn::http1::Builder;
-use hyper::header;
-use hyper::upgrade::OnUpgrade;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
+use hyper::{
+    body::{Body, Incoming},
+    client::conn::http1::Builder,
+    header,
+    upgrade::{OnUpgrade, Upgraded},
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
-use crate::service::request::ProxyRequest;
-use crate::service::response::{BoxBodyResponse, LocalResponse, ProxyResponse};
+use crate::service::{
+    request::ProxyRequest,
+    response::{BoxBodyResponse, LocalResponse, ProxyResponse},
+};
 
-/// Forwards the request to the target server and returns the response.
-pub async fn forward(
+pub(super) async fn forward(
     mut request: ProxyRequest<Incoming>,
     to: SocketAddr,
 ) -> Result<BoxBodyResponse, hyper::Error> {
     let Ok(stream) = TcpStream::connect(to).await else {
         return Ok(LocalResponse::bad_gateway());
     };
+
+    let stream = stream.compat(); // Convert into a compatible type
 
     let (mut sender, conn) = Builder::new()
         .preserve_header_case(true)
@@ -51,7 +61,6 @@ pub async fn forward(
     Ok(ProxyResponse::new(response.map(|body| body.boxed())).into_forwarded())
 }
 
-/// TCP tunnel for upgraded connections.
 async fn tunnel(client: OnUpgrade, server: OnUpgrade) {
     let (mut upgraded_client, mut upgraded_server) = tokio::try_join!(client, server).unwrap();
 

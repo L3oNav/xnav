@@ -105,7 +105,7 @@ mod tests {
     fn forwarded_request_with_proxy_id() {
         let client = "127.0.0.1:8000".parse().unwrap();
         let proxy = "127.0.0.1:9000".parse().unwrap();
-        let proxy_id = String::from("rxh/main");
+        let proxy_id = String::from("xnav/main");
 
         let request = ProxyRequest::new(
             Request::builder().body(Body::empty()).unwrap(),

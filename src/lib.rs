@@ -1,7 +1,7 @@
 // src/lib.rs
 // Uncomment if you plan to use these features
-// #![feature(ptr_from_ref)]
-// #![feature(is_some_and)]
+#![feature(ptr_from_ref)]
+#![feature(is_some_and)]
 
 pub mod config;
 pub mod server;
@@ -17,7 +17,6 @@ pub use service::{BoxBodyResponse, LocalResponse, ProxyResponse};
 pub use sync::{Notification, Notifier, Subscription};
 pub use threading::{make as make_scheduler, Scheduler, WeightedRoundRobin};
 
-/// RXH version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Top level error to use for return types in the public API and main function.

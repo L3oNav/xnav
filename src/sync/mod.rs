@@ -1,5 +1,3 @@
-//! Custom synchronization primitives for RXH.
-
 mod ring;
 mod sync;
 
