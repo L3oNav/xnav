@@ -1,9 +1,13 @@
-use std::{future::Future, io, net::SocketAddr, pin::Pin, ptr, sync::Arc};
-
-use tokio::{
-    net::{TcpListener, TcpSocket},
-    sync::{watch, Semaphore},
-};
+use hyper::client::conn::http1::Builder;
+use std::future::Future;
+use std::io;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::ptr;
+use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpListener, TcpSocket};
+use tokio::sync::{watch, Semaphore};
 
 use crate::{
     config,

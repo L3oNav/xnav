@@ -1,11 +1,13 @@
-//! Proxy specific sub-service.
-
-use crate::request::ProxyRequest;
-use crate::response::{BoxBodyResponse, LocalResponse, ProxyResponse};
 use http_body_util::BodyExt;
-use hyper::{body::Incoming, header, upgrade::OnUpgrade};
-use std::net::SocketAddr;
+use hyper::body::{Body, Incoming};
+use hyper::client::conn::http1::Builder;
+use hyper::header;
+use hyper::upgrade::OnUpgrade;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+
+use crate::service::request::ProxyRequest;
+use crate::service::response::{BoxBodyResponse, LocalResponse, ProxyResponse};
 
 /// Forwards the request to the target server and returns the response.
 pub async fn forward(
@@ -16,7 +18,7 @@ pub async fn forward(
         return Ok(LocalResponse::bad_gateway());
     };
 
-    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
+    let (mut sender, conn) = Builder::new()
         .preserve_header_case(true)
         .title_case_headers(true)
         .handshake(stream)
